@@ -10,6 +10,7 @@ use silentpayments::utils::receiving::{
 };
 use libbitcoinkernel_sys::ChainstateManager;
 use std::str::FromStr;
+use log::info;
 
 pub fn vec_to_hex_string(data: &Vec<u8>) -> String {
     let mut hex_string = String::with_capacity(data.len() * 2);
@@ -92,6 +93,9 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: Sca
             get_pubkey_from_input(&input.script_sig, &input.witness, &input.prevout).unwrap()
         })
         .collect();
+    if input_pub_keys.len() == 0 {
+        return;
+    }
     let pubkeys_ref: Vec<&PublicKey> = input_pub_keys.iter().collect();
     let outpoints_data: Vec<_> = scan_tx_helper
         .ins
@@ -103,7 +107,13 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: Sca
             (txid, input.prevout_data.1)
         })
         .collect();
-    let tweak_data = calculate_tweak_data(&pubkeys_ref, &outpoints_data).unwrap();
+    let tweak_data = match calculate_tweak_data(&pubkeys_ref, &outpoints_data) {
+        Ok(data) => data,
+        Err(e) => {
+            println!("Error calculating tweak data: {:?}", e);
+            return;
+        }
+    };
     let ecdh_shared_secret = calculate_shared_secret(tweak_data, *secret_scan_key).unwrap();
     let pubkeys_to_check: Vec<XOnlyPublicKey> = scan_tx_helper
         .outs
@@ -116,13 +126,17 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: Sca
             }
         })
         .collect();
+    if pubkeys_to_check.len() == 0 { return; }
     if let Ok(res) = receiver.scan_transaction(&ecdh_shared_secret, pubkeys_to_check) {
-        println!("\nres: {:?}\n", res);
+        if !res.is_empty() {
+            println!("\nres: {:?}\n", res);
+        }
     }
 }
 
 pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_key: &SecretKey) {
     let mut block_index_res = chainman.get_block_index_tip();
+    let mut block_counter = 0;
     while let Ok(ref block_index) = block_index_res {
         let undo = chainman.read_undo_data(&block_index).unwrap();
         let raw_block: Vec<u8> = chainman.read_block_data(&block_index).unwrap().into();
@@ -163,9 +177,12 @@ pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_k
                 });
             }
             scan_tx(&receiver, &secret_scan_key, scan_tx_helper.clone());
-            println!("helper: {:?}", scan_tx_helper);
         }
         block_index_res = block_index_res.unwrap().prev();
+        block_counter += 1;
+        if block_counter % 10 == 0 {
+            info!("Processed block number: {}", block_counter);
+        }
     }
     log::info!("scanned txs!");
 }

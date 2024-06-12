@@ -119,6 +119,7 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: Sca
         .outs
         .iter()
         .filter_map(|script_pubkey| {
+            if script_pubkey.len() < 2 { return None; }
             if let Ok(res) = XOnlyPublicKey::from_slice(&script_pubkey[2..]) {
                 Some(res)
             } else {

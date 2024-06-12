@@ -11,6 +11,7 @@ use silentpayments::utils::receiving::{
 use libbitcoinkernel_sys::ChainstateManager;
 use std::str::FromStr;
 use log::info;
+use rayon::prelude::*;
 
 pub fn vec_to_hex_string(data: &Vec<u8>) -> String {
     let mut hex_string = String::with_capacity(data.len() * 2);
@@ -135,9 +136,17 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: Sca
     }
 }
 
+// Define a thread-safe structure to hold necessary data
+struct TransactionData {
+    transaction_undo_size: u64,
+    transaction_input_size: u64,
+    scan_tx_helper: ScanTxHelper,
+}
+
 pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_key: &SecretKey) {
     let mut block_index_res = chainman.get_block_index_tip();
     let mut block_counter = 0;
+
     while let Ok(ref block_index) = block_index_res {
         let undo = chainman.read_undo_data(&block_index).unwrap();
         let raw_block: Vec<u8> = chainman.read_block_data(&block_index).unwrap().into();
@@ -145,12 +154,16 @@ pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_k
         // Should be the same size minus the coinbase transaction
         assert_eq!(block.txdata.len() - 1, undo.n_tx_undo);
 
+        // Create a vector to hold the data to be processed
+        let mut transactions_data: Vec<TransactionData> = Vec::new();
+
         for i in 0..(block.txdata.len() - 1) {
             let transaction_undo_size: u64 = undo
                 .get_get_transaction_undo_size(i.try_into().unwrap())
                 .unwrap();
             let transaction_input_size: u64 = block.txdata[i + 1].input.len().try_into().unwrap();
             assert_eq!(transaction_input_size, transaction_undo_size);
+
             let mut scan_tx_helper = ScanTxHelper {
                 ins: vec![],
                 outs: block.txdata[i + 1]
@@ -159,6 +172,7 @@ pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_k
                     .map(|output| output.script_pubkey.to_bytes())
                     .collect(),
             };
+
             for j in 0..transaction_input_size {
                 scan_tx_helper.ins.push(Input {
                     prevout: undo
@@ -177,8 +191,20 @@ pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_k
                     ),
                 });
             }
-            scan_tx(&receiver, &secret_scan_key, scan_tx_helper.clone());
+
+            transactions_data.push(TransactionData {
+                transaction_undo_size,
+                transaction_input_size,
+                scan_tx_helper,
+            });
         }
+
+        // Process the transactions data in parallel
+        transactions_data.par_iter().for_each(|data| {
+            assert_eq!(data.transaction_input_size, data.transaction_undo_size);
+            scan_tx(&receiver, &secret_scan_key, data.scan_tx_helper.clone());
+        });
+
         block_index_res = block_index_res.unwrap().prev();
         block_counter += 1;
         if block_counter % 10 == 0 {

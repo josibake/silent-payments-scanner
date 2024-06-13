@@ -1,7 +1,7 @@
 use env_logger::Builder;
 use libbitcoinkernel_sys::{
-    ChainType, Context, ContextBuilder, KernelError,
-    KernelNotificationInterfaceCallbackHolder, LogCallback, Logger,
+    ChainType, Context, ContextBuilder, KernelError, KernelNotificationInterfaceCallbackHolder,
+    LogCallback, Logger,
 };
 use log::LevelFilter;
 
@@ -34,4 +34,3 @@ pub fn create_context(network: ChainType) -> Context {
         .build()
         .unwrap()
 }
-

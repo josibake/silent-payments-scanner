@@ -1,10 +1,11 @@
 use clap::Parser;
 use libbitcoinkernel_sys::{
-    BlockManagerOptions, ChainstateLoadOptions, ChainstateManager, ChainstateManagerOptions, ChainType,
+    BlockManagerOptions, ChainType, ChainstateLoadOptions, ChainstateManager,
+    ChainstateManagerOptions,
 };
 
-mod scanner;
 mod kernel;
+mod scanner;
 
 /// A simple CLI tool
 #[derive(Parser, Debug)]

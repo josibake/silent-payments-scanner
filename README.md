@@ -54,3 +54,6 @@ cargo run -- --datadir "/path/to/datadir" \
              --scankey "WIF_encoded_scan_key" \
              --spendpubkey "hex_encoded_compressed_spend_pub_key"
 ```
+> [!NOTE]
+> You may need to update `.carg/config` to specify the correct install location for the libbitcoinkernel shared library (currently defaults to `/usr/local/lib`. Alternatively, you can specify `LD_LIBRARY_PATH=<path/to/lib> cargo run ..`.
+

@@ -207,7 +207,7 @@ pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_k
 
         block_index_res = block_index_res.unwrap().prev();
         block_counter += 1;
-        if block_counter % 10 == 0 {
+        if block_counter % 5000 == 0 {
             info!("Processed block number: {}", block_counter);
         }
     }

@@ -13,11 +13,9 @@ use std::fmt;
 use std::str::FromStr;
 
 pub fn vec_to_hex_string(data: &[u8]) -> String {
-    let mut hex_string = String::with_capacity(data.len() * 2);
-    for byte in data {
-        hex_string.push_str(&format!("{:02x}", byte));
-    }
-    hex_string
+    data.iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect::<String>()
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +75,7 @@ pub fn parse_keys(scan_key: String, spend_pub_key: String) -> (Receiver, SecretK
 fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: &ScanTxHelper) {
     let input_pub_keys: Vec<PublicKey> = scan_tx_helper
         .ins
-        .iter()
+        .par_iter()
         .filter_map(|input| {
             get_pubkey_from_input(&input.script_sig, &input.witness, &input.prevout).unwrap()
         })
@@ -88,7 +86,7 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: &Sc
     let pubkeys_ref: Vec<&PublicKey> = input_pub_keys.iter().collect();
     let outpoints_data: Vec<_> = scan_tx_helper
         .ins
-        .iter()
+        .par_iter()
         .map(|input| {
             let txid = bitcoin::Txid::from_slice(&input.prevout_data.0)
                 .unwrap()
@@ -106,7 +104,7 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: &Sc
     let ecdh_shared_secret = calculate_shared_secret(tweak_data, *secret_scan_key).unwrap();
     let pubkeys_to_check: Vec<XOnlyPublicKey> = scan_tx_helper
         .outs
-        .iter()
+        .par_iter()
         .filter_map(|script_pubkey| {
             if script_pubkey.len() < 2 {
                 return None;
@@ -124,75 +122,70 @@ fn scan_tx(receiver: &Receiver, secret_scan_key: &SecretKey, scan_tx_helper: &Sc
     }
 }
 
-struct TransactionData {
-    transaction_undo_size: u64,
-    transaction_input_size: u64,
-    scan_tx_helper: ScanTxHelper,
-}
+pub fn scan_txs(
+    chainman: &ChainstateManager,
+    receiver: &Receiver,
+    secret_scan_key: &SecretKey,
+    birthday: i32,
+) {
+    info!("start!");
+    let chain_tip = chainman.get_block_index_tip();
+    // start from 1 since genesis block has no undo data
+    // TODO: make this start from wallet birthday / or taproot activation
+    let block_numbers = birthday..chain_tip.info().height;
+    block_numbers
+        .collect::<Vec<_>>()
+        .par_iter()
+        .for_each(|&block_num| {
+            let block_index = &chainman
+                .get_block_index_by_height(block_num)
+                .unwrap()
+                .into();
+            let raw_block: Vec<u8> = chainman.read_block_data(block_index).unwrap().into();
+            let undo = chainman.read_undo_data(&block_index).unwrap();
+            let block: bitcoin::Block = deserialize(&raw_block).unwrap();
+            assert_eq!(block.txdata.len() - 1, undo.n_tx_undo);
 
-pub fn scan_txs(chainman: &ChainstateManager, receiver: &Receiver, secret_scan_key: &SecretKey) {
-    let mut block_index_res = chainman.get_block_index_tip();
-    let mut block_counter = 0;
-
-    while let Ok(ref block_index) = block_index_res {
-        let undo = chainman.read_undo_data(&block_index).unwrap();
-        let raw_block: Vec<u8> = chainman.read_block_data(&block_index).unwrap().into();
-        let block: bitcoin::Block = deserialize(&raw_block).unwrap();
-        assert_eq!(block.txdata.len() - 1, undo.n_tx_undo);
-
-        let transactions_data: Vec<TransactionData> = (0..block.txdata.len() - 1)
-            .map(|i| {
-                let transaction_undo_size: u64 = undo
-                    .get_get_transaction_undo_size(i.try_into().unwrap())
-                    .unwrap();
+            let txs = 0..block.txdata.len() - 1;
+            txs.collect::<Vec<_>>().par_iter().for_each(|&tx_num| {
+                let transaction_undo_size: u64 =
+                    undo.get_get_transaction_undo_size(tx_num.try_into().unwrap());
                 let transaction_input_size: u64 =
-                    block.txdata[i + 1].input.len().try_into().unwrap();
+                    block.txdata[tx_num + 1].input.len().try_into().unwrap();
                 assert_eq!(transaction_input_size, transaction_undo_size);
 
                 let scan_tx_helper = ScanTxHelper {
                     ins: (0..transaction_input_size)
+                        .into_par_iter()
                         .map(|j| Input {
                             prevout: undo
-                                .get_prevout_by_index(i as u64, j)
+                                .get_prevout_by_index(tx_num as u64, j)
                                 .unwrap()
                                 .script_pubkey,
-                            script_sig: block.txdata[i + 1].input[j as usize].script_sig.to_bytes(),
-                            witness: block.txdata[i + 1].input[j as usize].witness.to_vec(),
+                            script_sig: block.txdata[tx_num + 1].input[j as usize]
+                                .script_sig
+                                .to_bytes(),
+                            witness: block.txdata[tx_num + 1].input[j as usize].witness.to_vec(),
                             prevout_data: (
-                                block.txdata[i + 1].input[j as usize]
+                                block.txdata[tx_num + 1].input[j as usize]
                                     .previous_output
                                     .txid
                                     .to_byte_array()
                                     .to_vec(),
-                                block.txdata[i + 1].input[j as usize].previous_output.vout,
+                                block.txdata[tx_num + 1].input[j as usize]
+                                    .previous_output
+                                    .vout,
                             ),
                         })
                         .collect(),
-                    outs: block.txdata[i + 1]
+                    outs: block.txdata[tx_num + 1]
                         .output
                         .iter()
                         .map(|output| output.script_pubkey.to_bytes())
                         .collect(),
                 };
-
-                TransactionData {
-                    transaction_undo_size,
-                    transaction_input_size,
-                    scan_tx_helper,
-                }
-            })
-            .collect();
-
-        transactions_data.par_iter().for_each(|data| {
-            assert_eq!(data.transaction_input_size, data.transaction_undo_size);
-            scan_tx(&receiver, &secret_scan_key, &data.scan_tx_helper);
+                scan_tx(&receiver, &secret_scan_key, &scan_tx_helper);
+            });
         });
-
-        block_index_res = block_index_res.unwrap().prev();
-        block_counter += 1;
-        if block_counter % 5000 == 0 {
-            info!("Processed block number: {}", block_counter);
-        }
-    }
-    log::info!("scanned txs!");
+    info!("done!");
 }

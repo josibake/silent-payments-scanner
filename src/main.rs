@@ -19,6 +19,10 @@ struct Args {
     #[arg(long)]
     network: String,
 
+    /// Birthday
+    #[arg(long)]
+    birthday: i32,
+
     /// Scan key
     #[arg(long)]
     scankey: String,
@@ -59,5 +63,5 @@ fn main() {
         .load_chainstate(ChainstateLoadOptions::new())
         .unwrap();
     chainman.import_blocks().unwrap();
-    scanner::scan_txs(&chainman, &receiver, &secret_scan_key);
+    scanner::scan_txs(&chainman, &receiver, &secret_scan_key, args.birthday);
 }
